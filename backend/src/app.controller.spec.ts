@@ -1,17 +1,17 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
+import { ApiController } from './modules/api/api.controller';
+import { ApiService } from './modules/api/api.service';
 
 describe('AppController', () => {
-  let appController: AppController;
+  let appController: ApiController;
 
   beforeEach(async () => {
     const app: TestingModule = await Test.createTestingModule({
-      controllers: [AppController],
-      providers: [AppService],
+      controllers: [ApiController],
+      providers: [ApiService],
     }).compile();
 
-    appController = app.get<AppController>(AppController);
+    appController = app.get<ApiController>(ApiController);
   });
 
   describe('root', () => {
