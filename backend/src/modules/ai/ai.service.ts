@@ -74,9 +74,11 @@ export class AiService {
 
   private buildRequest(
     userMessage: string,
+    history: Array<{ role: 'user' | 'assistant'; content: string }>,
   ): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
       { role: 'system', content: this.systemPrompt },
+      ...history,
       { role: 'user', content: userMessage },
     ];
 
@@ -117,12 +119,15 @@ export class AiService {
     return JSON.stringify({ error: `Unknown tool ${toolName}.` });
   }
 
-  async generateReply(userMessage: string): Promise<string> {
+  async generateReply(
+    userMessage: string,
+    history: Array<{ role: 'user' | 'assistant'; content: string }> = [],
+  ): Promise<string> {
     if (!this.apiKey) {
       return 'OPENROUTER_API_KEY is not configured.';
     }
 
-    const messages = this.buildRequest(userMessage);
+    const messages = this.buildRequest(userMessage, history);
 
     try {
       let completion: OpenAI.Chat.Completions.ChatCompletion;

@@ -13,7 +13,13 @@ export class BotUpdate {
     @Ctx() ctx: Context,
     @Message('text') text: string,
   ): Promise<void> {
-    const reply = await this.botService.handleTelegramText(text.trim());
+    const chatId = ctx.chat?.id;
+    const conversationId =
+      typeof chatId === 'number' ? `telegram:${chatId}` : 'telegram:unknown';
+    const reply = await this.botService.handleTelegramText(
+      text.trim(),
+      conversationId,
+    );
 
     if (!reply) {
       return;
