@@ -53,3 +53,5 @@ temp/
 
 .kilo
 AGENTS.md
+.env
+.env.example
