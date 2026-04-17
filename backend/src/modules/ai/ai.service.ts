@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
+import { existsSync, readFileSync } from 'node:fs';
+import { isAbsolute, resolve } from 'node:path';
 import { DevicesService } from '../devices/devices.service';
 
 @Injectable()
@@ -10,6 +12,13 @@ export class AiService {
   private readonly apiKey?: string;
   private readonly model: string;
   private readonly fallbackModel = 'openrouter/free';
+  private readonly fallbackSystemPrompt = [
+    'You are a smart-home assistant for Telegram.',
+    'Answer briefly in Russian unless user asks another language.',
+    'If the user asks about device status or control, prefer using tools.',
+    'Never invent device IDs or states if tools are available.',
+  ].join(' ');
+  private readonly defaultSystemPromptFile = 'prompts/system-prompt.txt';
   private readonly systemPrompt: string;
   private readonly tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     {
@@ -53,14 +62,7 @@ export class AiService {
     this.apiKey = this.configService.get<string>('OPENROUTER_API_KEY');
     this.model =
       this.configService.get<string>('OPENROUTER_MODEL') ?? this.fallbackModel;
-    this.systemPrompt =
-      this.configService.get<string>('OPENROUTER_SYSTEM_PROMPT') ??
-      [
-        'You are a smart-home assistant for Telegram.',
-        'Answer briefly in Russian unless user asks another language.',
-        'If the user asks about device status or control, prefer using tools.',
-        'Never invent device IDs or states if tools are available.',
-      ].join(' ');
+    this.systemPrompt = this.resolveSystemPrompt();
 
     this.client = new OpenAI({
       apiKey: this.apiKey ?? 'missing-api-key',
@@ -72,12 +74,91 @@ export class AiService {
     return this.systemPrompt;
   }
 
+  private resolveSystemPrompt(): string {
+    const configuredPromptPath = this.configService
+      .get<string>('OPENROUTER_SYSTEM_PROMPT_FILE')
+      ?.trim();
+
+    const promptFromFile = this.loadSystemPromptFromFile(configuredPromptPath);
+
+    if (promptFromFile) {
+      return promptFromFile;
+    }
+
+    const inlinePrompt = this.configService
+      .get<string>('OPENROUTER_SYSTEM_PROMPT')
+      ?.trim();
+
+    if (inlinePrompt) {
+      return inlinePrompt;
+    }
+
+    return this.fallbackSystemPrompt;
+  }
+
+  private loadSystemPromptFromFile(configuredPath?: string): string | null {
+    const normalizedPath = configuredPath?.trim();
+    const promptFilePathCandidates = this.resolvePromptFilePathCandidates(
+      normalizedPath || this.defaultSystemPromptFile,
+    );
+
+    for (const promptFilePath of promptFilePathCandidates) {
+      if (!existsSync(promptFilePath)) {
+        continue;
+      }
+
+      try {
+        const prompt = readFileSync(promptFilePath, 'utf-8').trim();
+
+        if (!prompt) {
+          this.logger.warn(`System prompt file is empty: ${promptFilePath}`);
+          continue;
+        }
+
+        this.logger.log(`Using system prompt from file: ${promptFilePath}`);
+        return prompt;
+      } catch (error) {
+        this.logger.warn(
+          `Failed to read system prompt file ${promptFilePath}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        );
+      }
+    }
+
+    if (normalizedPath) {
+      this.logger.warn(
+        `OPENROUTER_SYSTEM_PROMPT_FILE is set, but file was not loaded: ${normalizedPath}`,
+      );
+    }
+
+    return null;
+  }
+
+  private resolvePromptFilePathCandidates(filePath: string): string[] {
+    if (isAbsolute(filePath)) {
+      return [filePath];
+    }
+
+    return [
+      resolve(process.cwd(), filePath),
+      resolve(process.cwd(), 'backend', filePath),
+      resolve(__dirname, '../../../..', filePath),
+      resolve(__dirname, '../../../../backend', filePath),
+    ];
+  }
+
   private buildRequest(
     userMessage: string,
     history: Array<{ role: 'user' | 'assistant'; content: string }>,
   ): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
+    const devices = this.devicesService.getAll();
+    const devicesContext = [
+      'Current mock devices state (source of truth):',
+      JSON.stringify(devices),
+    ].join('\n');
+
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
       { role: 'system', content: this.systemPrompt },
+      { role: 'system', content: devicesContext },
       ...history,
       { role: 'user', content: userMessage },
     ];
