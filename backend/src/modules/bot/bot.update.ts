@@ -13,18 +13,30 @@ export class BotUpdate {
     @Ctx() ctx: Context,
     @Message('text') text: string,
   ): Promise<void> {
-    const chatId = ctx.chat?.id;
-    const conversationId =
-      typeof chatId === 'number' ? `telegram:${chatId}` : 'telegram:unknown';
-    const reply = await this.botService.handleTelegramText(
-      text.trim(),
-      conversationId,
-    );
-
-    if (!reply) {
+    const trimmedText = text.trim();
+    if (!trimmedText) {
       return;
     }
 
-    await ctx.reply(reply);
+    const chatId = ctx.chat?.id;
+    const conversationId =
+      typeof chatId === 'number' ? `telegram:${chatId}` : 'telegram:unknown';
+    const placeholderMessage = await ctx.reply('Печатает...');
+    const reply = await this.botService.handleTelegramText(trimmedText, conversationId);
+
+    if (!reply) {
+      await ctx.telegram.deleteMessage(
+        placeholderMessage.chat.id,
+        placeholderMessage.message_id,
+      );
+      return;
+    }
+
+    await ctx.telegram.editMessageText(
+      placeholderMessage.chat.id,
+      placeholderMessage.message_id,
+      undefined,
+      reply,
+    );
   }
 }
