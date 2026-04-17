@@ -15,6 +15,7 @@ export class AiService {
   private readonly fallbackSystemPrompt = [
     'You are a smart-home assistant for Telegram.',
     'Answer briefly in Russian unless user asks another language.',
+    'Reply in plain text only. Do not use Markdown formatting.',
     'If the user asks about device status or control, prefer using tools.',
     'Never invent device IDs or states if tools are available.',
   ].join(' ');
