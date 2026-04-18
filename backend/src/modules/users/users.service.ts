@@ -95,6 +95,55 @@ export class UsersService {
     return { user, isNewUser: true };
   }
 
+  async getProfileByTelegramId(telegramId: string): Promise<{
+    username: string | null;
+    displayName: string | null;
+    createdAt: Date;
+  } | null> {
+    const account = await this.telegramAccountRepository.findOne({
+      where: { telegramId },
+      relations: { user: true },
+    });
+
+    if (!account) {
+      return null;
+    }
+
+    return {
+      username: account.username ?? null,
+      displayName: account.user.displayName ?? null,
+      createdAt: account.user.createdAt,
+    };
+  }
+
+  async updateDisplayNameByTelegramId(
+    telegramId: string,
+    displayName: string,
+  ): Promise<{
+    previousDisplayName: string | null;
+    updatedDisplayName: string;
+  }> {
+    const account = await this.telegramAccountRepository.findOne({
+      where: { telegramId },
+      relations: { user: true },
+    });
+
+    if (!account) {
+      throw new NotFoundException('Пользователь Telegram не найден');
+    }
+
+    const trimmedDisplayName = displayName.trim();
+    const previousDisplayName = account.user.displayName ?? null;
+
+    account.user.displayName = trimmedDisplayName;
+    await this.userRepository.save(account.user);
+
+    return {
+      previousDisplayName,
+      updatedDisplayName: trimmedDisplayName,
+    };
+  }
+
   async linkTelegramByCode(data: {
     code: string;
     telegramId: string;
