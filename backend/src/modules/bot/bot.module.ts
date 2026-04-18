@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TelegrafModule } from 'nestjs-telegraf';
 import { AiModule } from '../ai/ai.module';
+import { UsersModule } from '../users/users.module';
 import { BotController } from './bot.controller';
 import { BotService } from './bot.service';
 import { BotUpdate } from './bot.update';
@@ -9,6 +10,7 @@ import { BotUpdate } from './bot.update';
 @Module({
   imports: [
     AiModule,
+    UsersModule,
     TelegrafModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({

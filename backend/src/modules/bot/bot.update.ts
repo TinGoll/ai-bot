@@ -19,10 +19,18 @@ export class BotUpdate {
     }
 
     const chatId = ctx.chat?.id;
+    const telegramId = ctx.from?.id;
+    const username = ctx.from?.username;
     const conversationId =
       typeof chatId === 'number' ? `telegram:${chatId}` : 'telegram:unknown';
     const placeholderMessage = await ctx.reply('Печатает...');
-    const reply = await this.botService.handleTelegramText(trimmedText, conversationId);
+    const reply = await this.botService.handleTelegramMessage({
+      text: trimmedText,
+      conversationId,
+      telegramId,
+      username,
+      chatId,
+    });
 
     if (!reply) {
       await ctx.telegram.deleteMessage(
