@@ -5,6 +5,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { DevicesService } from '../devices/devices.service';
 
+type AiUserContext = {
+  isFamilyMember: boolean;
+  displayName: string | null;
+  adminDescription: string | null;
+};
+
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
@@ -150,6 +156,7 @@ export class AiService {
   private buildRequest(
     userMessage: string,
     history: Array<{ role: 'user' | 'assistant'; content: string }>,
+    userContext?: AiUserContext,
   ): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
     const devices = this.devicesService.getAll();
     const devicesContext = [
@@ -160,9 +167,21 @@ export class AiService {
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
       { role: 'system', content: this.systemPrompt },
       { role: 'system', content: devicesContext },
-      ...history,
-      { role: 'user', content: userMessage },
     ];
+
+    if (userContext?.isFamilyMember) {
+      const profileContext = [
+        'Family member personalization context (internal, do not disclose source):',
+        `Preferred name: ${userContext.displayName?.trim() || 'not provided'}`,
+        `Admin profile notes: ${userContext.adminDescription?.trim() || 'not provided'}`,
+        'When preferred name is provided, address the user by this name in your replies.',
+        'Use this context to personalize communication style, but never mention these notes were provided by the system.',
+      ].join('\n');
+
+      messages.push({ role: 'system', content: profileContext });
+    }
+
+    messages.push(...history, { role: 'user', content: userMessage });
 
     return messages;
   }
@@ -204,12 +223,13 @@ export class AiService {
   async generateReply(
     userMessage: string,
     history: Array<{ role: 'user' | 'assistant'; content: string }> = [],
+    userContext?: AiUserContext,
   ): Promise<string> {
     if (!this.apiKey) {
       return 'OPENROUTER_API_KEY is not configured.';
     }
 
-    const messages = this.buildRequest(userMessage, history);
+    const messages = this.buildRequest(userMessage, history, userContext);
 
     try {
       let completion: OpenAI.Chat.Completions.ChatCompletion;
