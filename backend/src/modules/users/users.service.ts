@@ -187,6 +187,33 @@ export class UsersService implements OnModuleInit {
     return this.resolveUserBlockState(account.user);
   }
 
+  async getAiPersonalizationContextByTelegramId(telegramId: string): Promise<{
+    isFamilyMember: boolean;
+    displayName: string | null;
+    adminDescription: string | null;
+  } | null> {
+    const account = await this.telegramAccountRepository.findOne({
+      where: { telegramId },
+      relations: { user: true },
+    });
+
+    if (!account) {
+      return null;
+    }
+
+    const normalizedRoles = this.normalizeRoles(account.user.roles);
+    if (!this.areRolesEqual(account.user.roles, normalizedRoles)) {
+      account.user.roles = normalizedRoles;
+      await this.userRepository.save(account.user);
+    }
+
+    return {
+      isFamilyMember: normalizedRoles.includes(UserRole.FAMILY_MEMBER),
+      displayName: account.user.displayName ?? null,
+      adminDescription: account.user.adminDescription ?? null,
+    };
+  }
+
   async updateRoleDescriptionByAdmin(data: {
     actorTelegramId: string;
     role: UserRole;
@@ -298,7 +325,9 @@ export class UsersService implements OnModuleInit {
     const nextAdminDescription = data.adminDescription.trim();
 
     if (!nextAdminDescription) {
-      throw new BadRequestException('Описание пользователя не может быть пустым');
+      throw new BadRequestException(
+        'Описание пользователя не может быть пустым',
+      );
     }
 
     if (nextAdminDescription.length > this.adminDescriptionMaxLength) {

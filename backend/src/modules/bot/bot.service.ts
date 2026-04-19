@@ -80,19 +80,34 @@ export class BotService {
       return this.handleLinkCommand(text, data);
     }
 
-    return this.handleTelegramText(text, data.conversationId);
+    const userContext = data.telegramId
+      ? await this.usersService.getAiPersonalizationContextByTelegramId(
+          String(data.telegramId),
+        )
+      : null;
+
+    return this.handleTelegramText(text, data.conversationId, userContext);
   }
 
   async handleTelegramText(
     text?: string,
     conversationId = 'telegram:unknown',
+    userContext?: {
+      isFamilyMember: boolean;
+      displayName: string | null;
+      adminDescription: string | null;
+    } | null,
   ): Promise<string | null> {
     if (!text) {
       return null;
     }
 
     const history = this.historyByConversation.get(conversationId) ?? [];
-    const reply = await this.aiService.generateReply(text, history);
+    const reply = await this.aiService.generateReply(
+      text,
+      history,
+      userContext ?? undefined,
+    );
 
     const updatedHistory: ChatHistoryMessage[] = [...history];
     updatedHistory.push({ role: 'user', content: text });
