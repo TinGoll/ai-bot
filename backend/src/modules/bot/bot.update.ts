@@ -13,16 +13,19 @@ const MENU_BUTTONS = {
   adminOpenProfile: 'Профиль пользователя',
   adminChangeUserRole: 'Изменить роль в профиле',
   adminChangeUserDisplayName: 'Изменить имя в профиле',
+  adminChangeUserDescription: 'Изменить описание в профиле',
   back: 'Назад',
 } as const;
 
 const DISPLAY_NAME_MAX_LENGTH = 64;
+const ADMIN_DESCRIPTION_MAX_LENGTH = 1000;
 
 type UserFlowState =
   | 'awaiting_display_name'
   | 'awaiting_admin_profile_target'
   | 'awaiting_admin_profile_role'
-  | 'awaiting_admin_profile_display_name';
+  | 'awaiting_admin_profile_display_name'
+  | 'awaiting_admin_profile_description';
 
 @Injectable()
 @Update()
@@ -60,6 +63,7 @@ export class BotUpdate {
         MENU_BUTTONS.adminChangeUserRole,
         MENU_BUTTONS.adminChangeUserDisplayName,
       ],
+      [MENU_BUTTONS.adminChangeUserDescription],
       [MENU_BUTTONS.back],
     ]).resize();
   }
@@ -69,6 +73,7 @@ export class BotUpdate {
     telegramId: string | null;
     username: string | null;
     displayName: string | null;
+    adminDescription: string | null;
     roles: UserRole[];
     isBlocked: boolean;
     blockReason: string | null;
@@ -80,6 +85,7 @@ export class BotUpdate {
       `telegramId: ${profile.telegramId ?? 'не привязан'}`,
       `username: ${profile.username ?? 'не указан'}`,
       `display_name: ${profile.displayName ?? 'не указан'}`,
+      `описание пользователя: ${profile.adminDescription ?? 'не указано'}`,
       `роли: ${profile.roles.join(', ')}`,
       `статус: ${profile.isBlocked ? 'заблокирован' : 'активен'}`,
       `причина блокировки: ${profile.blockReason ?? 'нет'}`,
@@ -88,6 +94,7 @@ export class BotUpdate {
       'Управление:',
       '• Изменить роль в профиле',
       '• Изменить имя в профиле',
+      '• Изменить описание в профиле',
     ].join('\n');
   }
 
@@ -400,6 +407,79 @@ export class BotUpdate {
     }
   }
 
+  private async startAdminUserDescriptionChange(
+    ctx: Context,
+    actorTelegramId: number,
+  ): Promise<void> {
+    const selectedUserId =
+      this.adminSelectedUserByTelegramId.get(actorTelegramId);
+    if (!selectedUserId) {
+      await ctx.reply(
+        'Сначала откройте профиль пользователя через кнопку «Профиль пользователя».',
+        this.getMainMenuKeyboard(true),
+      );
+      return;
+    }
+
+    this.flowStateByTelegramId.set(
+      actorTelegramId,
+      'awaiting_admin_profile_description',
+    );
+    await ctx.reply(
+      `Введите новое описание пользователя (до ${ADMIN_DESCRIPTION_MAX_LENGTH} символов):`,
+      this.getBackKeyboard(),
+    );
+  }
+
+  private async handleAdminUserDescriptionInput(
+    ctx: Context,
+    actorTelegramId: number,
+    text: string,
+  ): Promise<void> {
+    const selectedUserId =
+      this.adminSelectedUserByTelegramId.get(actorTelegramId);
+    if (!selectedUserId) {
+      this.flowStateByTelegramId.delete(actorTelegramId);
+      await ctx.reply(
+        'Сначала откройте профиль пользователя.',
+        this.getMainMenuKeyboard(true),
+      );
+      return;
+    }
+
+    const adminDescription = text.trim();
+    if (!adminDescription) {
+      await ctx.reply(
+        'Описание не может быть пустым. Введите описание пользователя.',
+        this.getBackKeyboard(),
+      );
+      return;
+    }
+
+    if (adminDescription.length > ADMIN_DESCRIPTION_MAX_LENGTH) {
+      await ctx.reply(
+        `Описание слишком длинное. Максимум ${ADMIN_DESCRIPTION_MAX_LENGTH} символов.`,
+        this.getBackKeyboard(),
+      );
+      return;
+    }
+
+    try {
+      await this.usersService.updateAdminDescriptionByAdminByUserId({
+        actorTelegramId: String(actorTelegramId),
+        targetUserId: selectedUserId,
+        adminDescription,
+      });
+      await this.openAdminUserProfile(ctx, actorTelegramId, selectedUserId);
+    } catch {
+      this.flowStateByTelegramId.delete(actorTelegramId);
+      await ctx.reply(
+        'Не удалось обновить описание пользователя.',
+        this.getAdminProfileKeyboard(),
+      );
+    }
+  }
+
   private parseRole(role: string): UserRole | null {
     const normalizedRole = role.trim() as UserRole;
     if (!USER_ROLE_VALUES.includes(normalizedRole)) {
@@ -428,6 +508,7 @@ export class BotUpdate {
           '/admin_profile <userId|telegramId>',
           '/admin_profile_role <role> <on|off>',
           '/admin_profile_name <display_name>',
+          '/admin_profile_description <description>',
         ].join('\n'),
       );
       return true;
@@ -643,6 +724,43 @@ export class BotUpdate {
       return true;
     }
 
+    if (command === '/admin_profile_description') {
+      const selectedUserId =
+        this.adminSelectedUserByTelegramId.get(actorTelegramId);
+      const adminDescription = args.join(' ').trim();
+
+      if (!selectedUserId) {
+        await ctx.reply(
+          'Сначала откройте профиль через /admin_profile <userId|telegramId>.',
+        );
+        return true;
+      }
+
+      if (!adminDescription) {
+        await ctx.reply('Формат: /admin_profile_description <description>');
+        return true;
+      }
+
+      if (adminDescription.length > ADMIN_DESCRIPTION_MAX_LENGTH) {
+        await ctx.reply(
+          `Описание слишком длинное. Максимум ${ADMIN_DESCRIPTION_MAX_LENGTH} символов.`,
+        );
+        return true;
+      }
+
+      try {
+        await this.usersService.updateAdminDescriptionByAdminByUserId({
+          actorTelegramId: String(actorTelegramId),
+          targetUserId: selectedUserId,
+          adminDescription,
+        });
+        await this.openAdminUserProfile(ctx, actorTelegramId, selectedUserId);
+      } catch {
+        await ctx.reply('Не удалось обновить описание пользователя.');
+      }
+      return true;
+    }
+
     return false;
   }
 
@@ -795,6 +913,11 @@ export class BotUpdate {
       return;
     }
 
+    if (trimmedText === MENU_BUTTONS.adminChangeUserDescription) {
+      await this.startAdminUserDescriptionChange(ctx, telegramId);
+      return;
+    }
+
     if (trimmedText.startsWith('/')) {
       this.flowStateByTelegramId.delete(telegramId);
     }
@@ -812,6 +935,11 @@ export class BotUpdate {
 
     if (currentFlowState === 'awaiting_admin_profile_display_name') {
       await this.handleAdminUserDisplayNameInput(ctx, telegramId, trimmedText);
+      return;
+    }
+
+    if (currentFlowState === 'awaiting_admin_profile_description') {
+      await this.handleAdminUserDescriptionInput(ctx, telegramId, trimmedText);
       return;
     }
 

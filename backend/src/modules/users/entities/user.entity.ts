@@ -17,6 +17,9 @@ export class UserEntity {
   @Column({ type: 'varchar', nullable: true })
   displayName?: string | null;
 
+  @Column({ type: 'varchar', length: 1000, nullable: true })
+  adminDescription?: string | null;
+
   @Column({ type: 'simple-array', default: UserRole.GUEST })
   roles!: UserRole[];
 

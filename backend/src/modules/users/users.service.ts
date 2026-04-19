@@ -23,6 +23,7 @@ import {
 @Injectable()
 export class UsersService implements OnModuleInit {
   private readonly linkTokenTtlMs = 15 * 60 * 1000;
+  private readonly adminDescriptionMaxLength = 1000;
   private readonly logger = new Logger(UsersService.name);
   private readonly initialAdminTelegramIds = new Set(
     (process.env.INITIAL_ADMIN_TELEGRAM_IDS ?? '')
@@ -283,6 +284,45 @@ export class UsersService implements OnModuleInit {
     };
   }
 
+  async updateAdminDescriptionByAdminByUserId(data: {
+    actorTelegramId: string;
+    targetUserId: string;
+    adminDescription: string;
+  }): Promise<{
+    id: string;
+    previousAdminDescription: string | null;
+    updatedAdminDescription: string;
+  }> {
+    const actor = await this.requireAdminByTelegramId(data.actorTelegramId);
+    const target = await this.getUserByIdOrFail(data.targetUserId);
+    const nextAdminDescription = data.adminDescription.trim();
+
+    if (!nextAdminDescription) {
+      throw new BadRequestException('Описание пользователя не может быть пустым');
+    }
+
+    if (nextAdminDescription.length > this.adminDescriptionMaxLength) {
+      throw new BadRequestException(
+        `Описание пользователя слишком длинное. Максимум ${this.adminDescriptionMaxLength} символов`,
+      );
+    }
+
+    const previousAdminDescription = target.adminDescription ?? null;
+    target.adminDescription = nextAdminDescription;
+    await this.userRepository.save(target);
+
+    this.logAdminAction(
+      actor.id,
+      `updated admin description for user ${target.id}`,
+    );
+
+    return {
+      id: target.id,
+      previousAdminDescription,
+      updatedAdminDescription: nextAdminDescription,
+    };
+  }
+
   async blockUserByAdmin(data: {
     actorTelegramId: string;
     targetTelegramId: string;
@@ -505,6 +545,7 @@ export class UsersService implements OnModuleInit {
     telegramId: string | null;
     username: string | null;
     displayName: string | null;
+    adminDescription: string | null;
     roles: UserRole[];
     roleDescriptions: Array<{ role: UserRole; description: string }>;
     isBlocked: boolean;
@@ -561,6 +602,7 @@ export class UsersService implements OnModuleInit {
       telegramId: user.telegramAccount?.telegramId ?? null,
       username: user.telegramAccount?.username ?? null,
       displayName: user.displayName ?? null,
+      adminDescription: user.adminDescription ?? null,
       roles: normalizedRoles,
       roleDescriptions,
       isBlocked: blockState.isBlocked,
