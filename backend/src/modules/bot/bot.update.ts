@@ -9,12 +9,14 @@ const MENU_BUTTONS = {
   profile: 'Профиль',
   roles: 'Мои роли',
   changeDisplayName: 'Изменить имя',
+  adminUsers: 'Все пользователи',
+  adminOpenProfile: 'Профиль пользователя',
   back: 'Назад',
 } as const;
 
 const DISPLAY_NAME_MAX_LENGTH = 64;
 
-type UserFlowState = 'awaiting_display_name';
+type UserFlowState = 'awaiting_display_name' | 'awaiting_admin_profile_target';
 
 @Injectable()
 @Update()
@@ -26,20 +28,38 @@ export class BotUpdate {
     private readonly usersService: UsersService,
   ) {}
 
-  private getMainMenuKeyboard() {
-    return Markup.keyboard([
+  private getMainMenuKeyboard(showAdminTools = false) {
+    const rows: string[][] = [
       [MENU_BUTTONS.profile, MENU_BUTTONS.roles],
       [MENU_BUTTONS.changeDisplayName],
-      [MENU_BUTTONS.back],
-    ]).resize();
+    ];
+
+    if (showAdminTools) {
+      rows.push([MENU_BUTTONS.adminUsers, MENU_BUTTONS.adminOpenProfile]);
+    }
+
+    rows.push([MENU_BUTTONS.back]);
+
+    return Markup.keyboard(rows).resize();
   }
 
   private getBackKeyboard() {
     return Markup.keyboard([[MENU_BUTTONS.back]]).resize();
   }
 
-  private async showMainMenu(ctx: Context): Promise<void> {
-    await ctx.reply('Главное меню:', this.getMainMenuKeyboard());
+  private async isAdmin(telegramId: number): Promise<boolean> {
+    const profile = await this.usersService.getProfileByTelegramId(
+      String(telegramId),
+    );
+
+    return profile?.roles.includes(UserRole.ADMIN) ?? false;
+  }
+
+  private async showMainMenu(ctx: Context, telegramId?: number): Promise<void> {
+    const showAdminTools =
+      typeof telegramId === 'number' ? await this.isAdmin(telegramId) : false;
+
+    await ctx.reply('Главное меню:', this.getMainMenuKeyboard(showAdminTools));
   }
 
   private async showProfile(ctx: Context, telegramId: number): Promise<void> {
@@ -50,10 +70,12 @@ export class BotUpdate {
     if (!profile) {
       await ctx.reply(
         'Профиль не найден. Выполните /start для регистрации.',
-        this.getMainMenuKeyboard(),
+        this.getMainMenuKeyboard(false),
       );
       return;
     }
+
+    const showAdminTools = await this.isAdmin(telegramId);
 
     const profileText = [
       'Ваш профиль:',
@@ -63,7 +85,7 @@ export class BotUpdate {
       `дата регистрации: ${profile.createdAt.toLocaleString('ru-RU')}`,
     ].join('\n');
 
-    await ctx.reply(profileText, this.getMainMenuKeyboard());
+    await ctx.reply(profileText, this.getMainMenuKeyboard(showAdminTools));
   }
 
   private async showRoleDescriptions(
@@ -76,17 +98,120 @@ export class BotUpdate {
     if (!profile) {
       await ctx.reply(
         'Профиль не найден. Выполните /start для регистрации.',
-        this.getMainMenuKeyboard(),
+        this.getMainMenuKeyboard(false),
       );
       return;
     }
+
+    const showAdminTools = await this.isAdmin(telegramId);
 
     const lines = ['Ваши роли:'];
     for (const roleDescription of profile.roleDescriptions) {
       lines.push(`• ${roleDescription.role}: ${roleDescription.description}`);
     }
 
-    await ctx.reply(lines.join('\n'), this.getMainMenuKeyboard());
+    await ctx.reply(lines.join('\n'), this.getMainMenuKeyboard(showAdminTools));
+  }
+
+  private async showAdminUsers(
+    ctx: Context,
+    actorTelegramId: number,
+  ): Promise<void> {
+    try {
+      const users = await this.usersService.getAllUsersByAdmin({
+        actorTelegramId: String(actorTelegramId),
+      });
+
+      if (!users.length) {
+        await ctx.reply(
+          'Пользователи не найдены.',
+          this.getMainMenuKeyboard(true),
+        );
+        return;
+      }
+
+      const lines = ['Пользователи:'];
+      for (const user of users) {
+        const username = user.username ? `@${user.username}` : 'без username';
+        const displayName = user.displayName ?? 'без display_name';
+        const telegramId = user.telegramId ?? 'не привязан';
+        const blockedMark = user.isBlocked ? ' [blocked]' : '';
+        lines.push(
+          `• ${displayName}${blockedMark} | tg: ${telegramId} | userId: ${user.id} | ${username}`,
+        );
+      }
+
+      await ctx.reply(lines.join('\n'), this.getMainMenuKeyboard(true));
+    } catch {
+      await ctx.reply(
+        'Команда доступна только администратору.',
+        this.getMainMenuKeyboard(false),
+      );
+    }
+  }
+
+  private async startAdminProfileLookup(
+    ctx: Context,
+    actorTelegramId: number,
+  ): Promise<void> {
+    const isAdmin = await this.isAdmin(actorTelegramId);
+    if (!isAdmin) {
+      await ctx.reply(
+        'Команда доступна только администратору.',
+        this.getMainMenuKeyboard(false),
+      );
+      return;
+    }
+
+    this.flowStateByTelegramId.set(
+      actorTelegramId,
+      'awaiting_admin_profile_target',
+    );
+    await ctx.reply(
+      'Введите userId или telegramId пользователя:',
+      this.getBackKeyboard(),
+    );
+  }
+
+  private async handleAdminProfileLookupInput(
+    ctx: Context,
+    actorTelegramId: number,
+    text: string,
+  ): Promise<void> {
+    const target = text.trim();
+    if (!target) {
+      await ctx.reply('Укажите userId или telegramId.', this.getBackKeyboard());
+      return;
+    }
+
+    try {
+      const profile = await this.usersService.getUserProfileByAdmin({
+        actorTelegramId: String(actorTelegramId),
+        target,
+      });
+
+      this.flowStateByTelegramId.delete(actorTelegramId);
+
+      const lines = [
+        'Профиль пользователя:',
+        `userId: ${profile.id}`,
+        `telegramId: ${profile.telegramId ?? 'не привязан'}`,
+        `username: ${profile.username ?? 'не указан'}`,
+        `display_name: ${profile.displayName ?? 'не указан'}`,
+        `роли: ${profile.roles.join(', ')}`,
+        `статус: ${profile.isBlocked ? 'заблокирован' : 'активен'}`,
+        `причина блокировки: ${profile.blockReason ?? 'нет'}`,
+        `дата регистрации: ${profile.createdAt.toLocaleString('ru-RU')}`,
+      ];
+
+      await ctx.reply(lines.join('\n'), this.getMainMenuKeyboard(true));
+    } catch {
+      this.flowStateByTelegramId.delete(actorTelegramId);
+      await ctx.reply(
+        'Не удалось открыть профиль. Проверьте идентификатор.',
+        this.getMainMenuKeyboard(true),
+      );
+    }
   }
 
   private parseRole(role: string): UserRole | null {
@@ -113,6 +238,8 @@ export class BotUpdate {
           '/admin_block <telegramId> <permanent|minutes> [reason]',
           '/admin_unblock <telegramId>',
           '/admin_role_desc <role> <description>',
+          '/admin_users',
+          '/admin_profile <userId|telegramId>',
         ].join('\n'),
       );
       return true;
@@ -237,6 +364,41 @@ export class BotUpdate {
       return true;
     }
 
+    if (command === '/admin_users') {
+      await this.showAdminUsers(ctx, actorTelegramId);
+      return true;
+    }
+
+    if (command === '/admin_profile') {
+      const [target] = args;
+      if (!target) {
+        await ctx.reply('Формат: /admin_profile <userId|telegramId>');
+        return true;
+      }
+
+      try {
+        const profile = await this.usersService.getUserProfileByAdmin({
+          actorTelegramId: String(actorTelegramId),
+          target,
+        });
+        const lines = [
+          'Профиль пользователя:',
+          `userId: ${profile.id}`,
+          `telegramId: ${profile.telegramId ?? 'не привязан'}`,
+          `username: ${profile.username ?? 'не указан'}`,
+          `display_name: ${profile.displayName ?? 'не указан'}`,
+          `роли: ${profile.roles.join(', ')}`,
+          `статус: ${profile.isBlocked ? 'заблокирован' : 'активен'}`,
+          `причина блокировки: ${profile.blockReason ?? 'нет'}`,
+          `дата регистрации: ${profile.createdAt.toLocaleString('ru-RU')}`,
+        ];
+        await ctx.reply(lines.join('\n'));
+      } catch {
+        await ctx.reply('Не удалось открыть профиль. Проверьте идентификатор.');
+      }
+      return true;
+    }
+
     return false;
   }
 
@@ -315,7 +477,7 @@ export class BotUpdate {
       if (typeof telegramId === 'number') {
         this.flowStateByTelegramId.delete(telegramId);
       }
-      await this.showMainMenu(ctx);
+      await this.showMainMenu(ctx, telegramId);
       return;
     }
 
@@ -362,11 +524,26 @@ export class BotUpdate {
       return;
     }
 
+    if (trimmedText === MENU_BUTTONS.adminUsers) {
+      await this.showAdminUsers(ctx, telegramId);
+      return;
+    }
+
+    if (trimmedText === MENU_BUTTONS.adminOpenProfile) {
+      await this.startAdminProfileLookup(ctx, telegramId);
+      return;
+    }
+
     if (trimmedText.startsWith('/')) {
       this.flowStateByTelegramId.delete(telegramId);
     }
 
     const currentFlowState = this.flowStateByTelegramId.get(telegramId);
+    if (currentFlowState === 'awaiting_admin_profile_target') {
+      await this.handleAdminProfileLookupInput(ctx, telegramId, trimmedText);
+      return;
+    }
+
     if (currentFlowState === 'awaiting_display_name') {
       await this.handleDisplayNameInput(ctx, telegramId, trimmedText);
       return;

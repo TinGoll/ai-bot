@@ -185,6 +185,8 @@ export class BotService {
         '/admin_block <telegramId> <permanent|minutes> [reason]',
         '/admin_unblock <telegramId>',
         '/admin_role_desc <role> <description>',
+        '/admin_users',
+        '/admin_profile <userId|telegramId>',
       ].join('\n');
     }
 
@@ -279,6 +281,61 @@ export class BotService {
         return `Описание роли ${roleDescription.role} обновлено: ${roleDescription.description}`;
       } catch {
         return 'Не удалось обновить описание роли. Проверьте права и параметры.';
+      }
+    }
+
+    if (command === '/admin_users') {
+      try {
+        const users = await this.usersService.getAllUsersByAdmin({
+          actorTelegramId: String(data.telegramId),
+        });
+
+        if (!users.length) {
+          return 'Пользователи не найдены.';
+        }
+
+        const lines = ['Пользователи:'];
+        for (const user of users) {
+          const username = user.username ? `@${user.username}` : 'без username';
+          const displayName = user.displayName ?? 'без display_name';
+          const telegramId = user.telegramId ?? 'не привязан';
+          const blockedMark = user.isBlocked ? ' [blocked]' : '';
+          lines.push(
+            `• ${displayName}${blockedMark} | tg: ${telegramId} | userId: ${user.id} | ${username}`,
+          );
+        }
+
+        return lines.join('\n');
+      } catch {
+        return 'Команда доступна только администратору.';
+      }
+    }
+
+    if (command === '/admin_profile') {
+      const [target] = args;
+      if (!target) {
+        return 'Формат: /admin_profile <userId|telegramId>';
+      }
+
+      try {
+        const profile = await this.usersService.getUserProfileByAdmin({
+          actorTelegramId: String(data.telegramId),
+          target,
+        });
+
+        return [
+          'Профиль пользователя:',
+          `userId: ${profile.id}`,
+          `telegramId: ${profile.telegramId ?? 'не привязан'}`,
+          `username: ${profile.username ?? 'не указан'}`,
+          `display_name: ${profile.displayName ?? 'не указан'}`,
+          `роли: ${profile.roles.join(', ')}`,
+          `статус: ${profile.isBlocked ? 'заблокирован' : 'активен'}`,
+          `причина блокировки: ${profile.blockReason ?? 'нет'}`,
+          `дата регистрации: ${profile.createdAt.toLocaleString('ru-RU')}`,
+        ].join('\n');
+      } catch {
+        return 'Не удалось открыть профиль. Проверьте идентификатор.';
       }
     }
 

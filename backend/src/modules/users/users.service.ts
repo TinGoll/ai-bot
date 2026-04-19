@@ -389,6 +389,135 @@ export class UsersService implements OnModuleInit {
     return saved;
   }
 
+  async getAllUsersByAdmin(data: { actorTelegramId: string }): Promise<
+    Array<{
+      id: string;
+      telegramId: string | null;
+      username: string | null;
+      displayName: string | null;
+      roles: UserRole[];
+      isBlocked: boolean;
+      blockedUntil: Date | null;
+      blockReason: string | null;
+      createdAt: Date;
+    }>
+  > {
+    await this.requireAdminByTelegramId(data.actorTelegramId);
+
+    const users = await this.userRepository.find({
+      relations: { telegramAccount: true },
+      order: { createdAt: 'DESC' },
+    });
+
+    const result: Array<{
+      id: string;
+      telegramId: string | null;
+      username: string | null;
+      displayName: string | null;
+      roles: UserRole[];
+      isBlocked: boolean;
+      blockedUntil: Date | null;
+      blockReason: string | null;
+      createdAt: Date;
+    }> = [];
+
+    for (const user of users) {
+      const normalizedRoles = this.normalizeRoles(user.roles);
+      if (!this.areRolesEqual(user.roles, normalizedRoles)) {
+        user.roles = normalizedRoles;
+        await this.userRepository.save(user);
+      }
+
+      const blockState = await this.resolveUserBlockState(user);
+      result.push({
+        id: user.id,
+        telegramId: user.telegramAccount?.telegramId ?? null,
+        username: user.telegramAccount?.username ?? null,
+        displayName: user.displayName ?? null,
+        roles: normalizedRoles,
+        isBlocked: blockState.isBlocked,
+        blockedUntil: blockState.blockedUntil,
+        blockReason: blockState.blockReason,
+        createdAt: user.createdAt,
+      });
+    }
+
+    return result;
+  }
+
+  async getUserProfileByAdmin(data: {
+    actorTelegramId: string;
+    target: string;
+  }): Promise<{
+    id: string;
+    telegramId: string | null;
+    username: string | null;
+    displayName: string | null;
+    roles: UserRole[];
+    roleDescriptions: Array<{ role: UserRole; description: string }>;
+    isBlocked: boolean;
+    blockedUntil: Date | null;
+    blockReason: string | null;
+    createdAt: Date;
+  }> {
+    await this.requireAdminByTelegramId(data.actorTelegramId);
+
+    const target = data.target.trim();
+    if (!target) {
+      throw new BadRequestException(
+        'Укажите userId или telegramId пользователя',
+      );
+    }
+
+    let user = await this.userRepository.findOne({
+      where: { id: target },
+      relations: { telegramAccount: true },
+    });
+
+    if (!user) {
+      const account = await this.telegramAccountRepository.findOne({
+        where: { telegramId: target },
+        relations: { user: true },
+      });
+
+      if (!account) {
+        throw new NotFoundException('Пользователь не найден');
+      }
+
+      user = await this.userRepository.findOne({
+        where: { id: account.user.id },
+        relations: { telegramAccount: true },
+      });
+    }
+
+    if (!user) {
+      throw new NotFoundException('Пользователь не найден');
+    }
+
+    const normalizedRoles = this.normalizeRoles(user.roles);
+    if (!this.areRolesEqual(user.roles, normalizedRoles)) {
+      user.roles = normalizedRoles;
+      await this.userRepository.save(user);
+    }
+
+    const roleDescriptions =
+      await this.getRoleDescriptionsByRoles(normalizedRoles);
+    const blockState = await this.resolveUserBlockState(user);
+
+    return {
+      id: user.id,
+      telegramId: user.telegramAccount?.telegramId ?? null,
+      username: user.telegramAccount?.username ?? null,
+      displayName: user.displayName ?? null,
+      roles: normalizedRoles,
+      roleDescriptions,
+      isBlocked: blockState.isBlocked,
+      blockedUntil: blockState.blockedUntil,
+      blockReason: blockState.blockReason,
+      createdAt: user.createdAt,
+    };
+  }
+
   async updateDisplayNameByTelegramId(
     telegramId: string,
     displayName: string,
