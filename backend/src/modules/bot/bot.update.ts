@@ -11,17 +11,24 @@ const MENU_BUTTONS = {
   changeDisplayName: 'Изменить имя',
   adminUsers: 'Все пользователи',
   adminOpenProfile: 'Профиль пользователя',
+  adminChangeUserRole: 'Изменить роль в профиле',
+  adminChangeUserDisplayName: 'Изменить имя в профиле',
   back: 'Назад',
 } as const;
 
 const DISPLAY_NAME_MAX_LENGTH = 64;
 
-type UserFlowState = 'awaiting_display_name' | 'awaiting_admin_profile_target';
+type UserFlowState =
+  | 'awaiting_display_name'
+  | 'awaiting_admin_profile_target'
+  | 'awaiting_admin_profile_role'
+  | 'awaiting_admin_profile_display_name';
 
 @Injectable()
 @Update()
 export class BotUpdate {
   private readonly flowStateByTelegramId = new Map<number, UserFlowState>();
+  private readonly adminSelectedUserByTelegramId = new Map<number, string>();
 
   constructor(
     private readonly botService: BotService,
@@ -45,6 +52,43 @@ export class BotUpdate {
 
   private getBackKeyboard() {
     return Markup.keyboard([[MENU_BUTTONS.back]]).resize();
+  }
+
+  private getAdminProfileKeyboard() {
+    return Markup.keyboard([
+      [
+        MENU_BUTTONS.adminChangeUserRole,
+        MENU_BUTTONS.adminChangeUserDisplayName,
+      ],
+      [MENU_BUTTONS.back],
+    ]).resize();
+  }
+
+  private formatAdminUserProfile(profile: {
+    id: string;
+    telegramId: string | null;
+    username: string | null;
+    displayName: string | null;
+    roles: UserRole[];
+    isBlocked: boolean;
+    blockReason: string | null;
+    createdAt: Date;
+  }): string {
+    return [
+      'Профиль пользователя:',
+      `userId: ${profile.id}`,
+      `telegramId: ${profile.telegramId ?? 'не привязан'}`,
+      `username: ${profile.username ?? 'не указан'}`,
+      `display_name: ${profile.displayName ?? 'не указан'}`,
+      `роли: ${profile.roles.join(', ')}`,
+      `статус: ${profile.isBlocked ? 'заблокирован' : 'активен'}`,
+      `причина блокировки: ${profile.blockReason ?? 'нет'}`,
+      `дата регистрации: ${profile.createdAt.toLocaleString('ru-RU')}`,
+      '',
+      'Управление:',
+      '• Изменить роль в профиле',
+      '• Изменить имя в профиле',
+    ].join('\n');
   }
 
   private async isAdmin(telegramId: number): Promise<boolean> {
@@ -185,31 +229,173 @@ export class BotUpdate {
     }
 
     try {
-      const profile = await this.usersService.getUserProfileByAdmin({
-        actorTelegramId: String(actorTelegramId),
-        target,
-      });
-
-      this.flowStateByTelegramId.delete(actorTelegramId);
-
-      const lines = [
-        'Профиль пользователя:',
-        `userId: ${profile.id}`,
-        `telegramId: ${profile.telegramId ?? 'не привязан'}`,
-        `username: ${profile.username ?? 'не указан'}`,
-        `display_name: ${profile.displayName ?? 'не указан'}`,
-        `роли: ${profile.roles.join(', ')}`,
-        `статус: ${profile.isBlocked ? 'заблокирован' : 'активен'}`,
-        `причина блокировки: ${profile.blockReason ?? 'нет'}`,
-        `дата регистрации: ${profile.createdAt.toLocaleString('ru-RU')}`,
-      ];
-
-      await ctx.reply(lines.join('\n'), this.getMainMenuKeyboard(true));
+      await this.openAdminUserProfile(ctx, actorTelegramId, target);
     } catch {
       this.flowStateByTelegramId.delete(actorTelegramId);
       await ctx.reply(
         'Не удалось открыть профиль. Проверьте идентификатор.',
         this.getMainMenuKeyboard(true),
+      );
+    }
+  }
+
+  private async openAdminUserProfile(
+    ctx: Context,
+    actorTelegramId: number,
+    target: string,
+  ): Promise<void> {
+    const profile = await this.usersService.getUserProfileByAdmin({
+      actorTelegramId: String(actorTelegramId),
+      target,
+    });
+
+    this.flowStateByTelegramId.delete(actorTelegramId);
+    this.adminSelectedUserByTelegramId.set(actorTelegramId, profile.id);
+
+    await ctx.reply(
+      this.formatAdminUserProfile(profile),
+      this.getAdminProfileKeyboard(),
+    );
+  }
+
+  private async startAdminUserRoleChange(
+    ctx: Context,
+    actorTelegramId: number,
+  ): Promise<void> {
+    const selectedUserId =
+      this.adminSelectedUserByTelegramId.get(actorTelegramId);
+    if (!selectedUserId) {
+      await ctx.reply(
+        'Сначала откройте профиль пользователя через кнопку «Профиль пользователя».',
+        this.getMainMenuKeyboard(true),
+      );
+      return;
+    }
+
+    this.flowStateByTelegramId.set(
+      actorTelegramId,
+      'awaiting_admin_profile_role',
+    );
+    await ctx.reply(
+      `Введите: <role> <on|off>. Доступные роли: ${USER_ROLE_VALUES.join(', ')}`,
+      this.getBackKeyboard(),
+    );
+  }
+
+  private async handleAdminUserRoleInput(
+    ctx: Context,
+    actorTelegramId: number,
+    text: string,
+  ): Promise<void> {
+    const selectedUserId =
+      this.adminSelectedUserByTelegramId.get(actorTelegramId);
+    if (!selectedUserId) {
+      this.flowStateByTelegramId.delete(actorTelegramId);
+      await ctx.reply(
+        'Сначала откройте профиль пользователя.',
+        this.getMainMenuKeyboard(true),
+      );
+      return;
+    }
+
+    const [roleRaw, modeRaw] = text.split(' ').filter(Boolean);
+    const role = roleRaw ? this.parseRole(roleRaw) : null;
+    const enabled = modeRaw === 'on';
+    const disabled = modeRaw === 'off';
+    if (!role || (!enabled && !disabled)) {
+      await ctx.reply(
+        `Формат: <role> <on|off>. Доступные роли: ${USER_ROLE_VALUES.join(', ')}`,
+        this.getBackKeyboard(),
+      );
+      return;
+    }
+
+    try {
+      await this.usersService.setUserRoleByAdminByUserId({
+        actorTelegramId: String(actorTelegramId),
+        targetUserId: selectedUserId,
+        role,
+        enabled,
+      });
+      await this.openAdminUserProfile(ctx, actorTelegramId, selectedUserId);
+    } catch {
+      this.flowStateByTelegramId.delete(actorTelegramId);
+      await ctx.reply(
+        'Не удалось изменить роль пользователя.',
+        this.getAdminProfileKeyboard(),
+      );
+    }
+  }
+
+  private async startAdminUserDisplayNameChange(
+    ctx: Context,
+    actorTelegramId: number,
+  ): Promise<void> {
+    const selectedUserId =
+      this.adminSelectedUserByTelegramId.get(actorTelegramId);
+    if (!selectedUserId) {
+      await ctx.reply(
+        'Сначала откройте профиль пользователя через кнопку «Профиль пользователя».',
+        this.getMainMenuKeyboard(true),
+      );
+      return;
+    }
+
+    this.flowStateByTelegramId.set(
+      actorTelegramId,
+      'awaiting_admin_profile_display_name',
+    );
+    await ctx.reply(
+      `Введите новый display_name (до ${DISPLAY_NAME_MAX_LENGTH} символов):`,
+      this.getBackKeyboard(),
+    );
+  }
+
+  private async handleAdminUserDisplayNameInput(
+    ctx: Context,
+    actorTelegramId: number,
+    text: string,
+  ): Promise<void> {
+    const selectedUserId =
+      this.adminSelectedUserByTelegramId.get(actorTelegramId);
+    if (!selectedUserId) {
+      this.flowStateByTelegramId.delete(actorTelegramId);
+      await ctx.reply(
+        'Сначала откройте профиль пользователя.',
+        this.getMainMenuKeyboard(true),
+      );
+      return;
+    }
+
+    const newDisplayName = text.trim();
+    if (!newDisplayName) {
+      await ctx.reply(
+        'Имя не может быть пустым. Введите display_name.',
+        this.getBackKeyboard(),
+      );
+      return;
+    }
+
+    if (newDisplayName.length > DISPLAY_NAME_MAX_LENGTH) {
+      await ctx.reply(
+        `Имя слишком длинное. Максимум ${DISPLAY_NAME_MAX_LENGTH} символов.`,
+        this.getBackKeyboard(),
+      );
+      return;
+    }
+
+    try {
+      await this.usersService.updateDisplayNameByAdminByUserId({
+        actorTelegramId: String(actorTelegramId),
+        targetUserId: selectedUserId,
+        displayName: newDisplayName,
+      });
+      await this.openAdminUserProfile(ctx, actorTelegramId, selectedUserId);
+    } catch {
+      this.flowStateByTelegramId.delete(actorTelegramId);
+      await ctx.reply(
+        'Не удалось обновить display_name пользователя.',
+        this.getAdminProfileKeyboard(),
       );
     }
   }
@@ -240,6 +426,8 @@ export class BotUpdate {
           '/admin_role_desc <role> <description>',
           '/admin_users',
           '/admin_profile <userId|telegramId>',
+          '/admin_profile_role <role> <on|off>',
+          '/admin_profile_name <display_name>',
         ].join('\n'),
       );
       return true;
@@ -377,24 +565,80 @@ export class BotUpdate {
       }
 
       try {
-        const profile = await this.usersService.getUserProfileByAdmin({
-          actorTelegramId: String(actorTelegramId),
-          target,
-        });
-        const lines = [
-          'Профиль пользователя:',
-          `userId: ${profile.id}`,
-          `telegramId: ${profile.telegramId ?? 'не привязан'}`,
-          `username: ${profile.username ?? 'не указан'}`,
-          `display_name: ${profile.displayName ?? 'не указан'}`,
-          `роли: ${profile.roles.join(', ')}`,
-          `статус: ${profile.isBlocked ? 'заблокирован' : 'активен'}`,
-          `причина блокировки: ${profile.blockReason ?? 'нет'}`,
-          `дата регистрации: ${profile.createdAt.toLocaleString('ru-RU')}`,
-        ];
-        await ctx.reply(lines.join('\n'));
+        await this.openAdminUserProfile(ctx, actorTelegramId, target);
       } catch {
         await ctx.reply('Не удалось открыть профиль. Проверьте идентификатор.');
+      }
+      return true;
+    }
+
+    if (command === '/admin_profile_role') {
+      const selectedUserId =
+        this.adminSelectedUserByTelegramId.get(actorTelegramId);
+      const [roleRaw, modeRaw] = args;
+      const role = roleRaw ? this.parseRole(roleRaw) : null;
+      const enabled = modeRaw === 'on';
+      const disabled = modeRaw === 'off';
+
+      if (!selectedUserId) {
+        await ctx.reply(
+          'Сначала откройте профиль через /admin_profile <userId|telegramId>.',
+        );
+        return true;
+      }
+
+      if (!role || (!enabled && !disabled)) {
+        await ctx.reply('Формат: /admin_profile_role <role> <on|off>');
+        return true;
+      }
+
+      try {
+        await this.usersService.setUserRoleByAdminByUserId({
+          actorTelegramId: String(actorTelegramId),
+          targetUserId: selectedUserId,
+          role,
+          enabled,
+        });
+        await this.openAdminUserProfile(ctx, actorTelegramId, selectedUserId);
+      } catch {
+        await ctx.reply('Не удалось изменить роль пользователя.');
+      }
+      return true;
+    }
+
+    if (command === '/admin_profile_name') {
+      const selectedUserId =
+        this.adminSelectedUserByTelegramId.get(actorTelegramId);
+      const displayName = args.join(' ').trim();
+
+      if (!selectedUserId) {
+        await ctx.reply(
+          'Сначала откройте профиль через /admin_profile <userId|telegramId>.',
+        );
+        return true;
+      }
+
+      if (!displayName) {
+        await ctx.reply('Формат: /admin_profile_name <display_name>');
+        return true;
+      }
+
+      if (displayName.length > DISPLAY_NAME_MAX_LENGTH) {
+        await ctx.reply(
+          `Имя слишком длинное. Максимум ${DISPLAY_NAME_MAX_LENGTH} символов.`,
+        );
+        return true;
+      }
+
+      try {
+        await this.usersService.updateDisplayNameByAdminByUserId({
+          actorTelegramId: String(actorTelegramId),
+          targetUserId: selectedUserId,
+          displayName,
+        });
+        await this.openAdminUserProfile(ctx, actorTelegramId, selectedUserId);
+      } catch {
+        await ctx.reply('Не удалось обновить display_name пользователя.');
       }
       return true;
     }
@@ -451,12 +695,18 @@ export class BotUpdate {
         `Новое имя: ${result.updatedDisplayName}`,
       ].join('\n');
 
-      await ctx.reply(confirmationText, this.getMainMenuKeyboard());
+      const showAdminTools = await this.isAdmin(telegramId);
+
+      await ctx.reply(
+        confirmationText,
+        this.getMainMenuKeyboard(showAdminTools),
+      );
     } catch {
       this.flowStateByTelegramId.delete(telegramId);
+      const showAdminTools = await this.isAdmin(telegramId);
       await ctx.reply(
         'Не удалось обновить имя. Выполните /start и попробуйте снова.',
-        this.getMainMenuKeyboard(),
+        this.getMainMenuKeyboard(showAdminTools),
       );
     }
   }
@@ -476,6 +726,7 @@ export class BotUpdate {
     if (trimmedText === '/menu' || trimmedText === MENU_BUTTONS.back) {
       if (typeof telegramId === 'number') {
         this.flowStateByTelegramId.delete(telegramId);
+        this.adminSelectedUserByTelegramId.delete(telegramId);
       }
       await this.showMainMenu(ctx, telegramId);
       return;
@@ -534,6 +785,16 @@ export class BotUpdate {
       return;
     }
 
+    if (trimmedText === MENU_BUTTONS.adminChangeUserRole) {
+      await this.startAdminUserRoleChange(ctx, telegramId);
+      return;
+    }
+
+    if (trimmedText === MENU_BUTTONS.adminChangeUserDisplayName) {
+      await this.startAdminUserDisplayNameChange(ctx, telegramId);
+      return;
+    }
+
     if (trimmedText.startsWith('/')) {
       this.flowStateByTelegramId.delete(telegramId);
     }
@@ -541,6 +802,16 @@ export class BotUpdate {
     const currentFlowState = this.flowStateByTelegramId.get(telegramId);
     if (currentFlowState === 'awaiting_admin_profile_target') {
       await this.handleAdminProfileLookupInput(ctx, telegramId, trimmedText);
+      return;
+    }
+
+    if (currentFlowState === 'awaiting_admin_profile_role') {
+      await this.handleAdminUserRoleInput(ctx, telegramId, trimmedText);
+      return;
+    }
+
+    if (currentFlowState === 'awaiting_admin_profile_display_name') {
+      await this.handleAdminUserDisplayNameInput(ctx, telegramId, trimmedText);
       return;
     }
 

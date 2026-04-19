@@ -231,6 +231,58 @@ export class UsersService implements OnModuleInit {
     return saved;
   }
 
+  async setUserRoleByAdminByUserId(data: {
+    actorTelegramId: string;
+    targetUserId: string;
+    role: UserRole;
+    enabled: boolean;
+  }): Promise<UserEntity> {
+    const actor = await this.requireAdminByTelegramId(data.actorTelegramId);
+    const target = await this.getUserByIdOrFail(data.targetUserId);
+    target.roles = this.toggleRole(target.roles, data.role, data.enabled);
+
+    const saved = await this.userRepository.save(target);
+    this.logAdminAction(
+      actor.id,
+      `${data.enabled ? 'enabled' : 'disabled'} role ${data.role} for user ${target.id}`,
+    );
+
+    return saved;
+  }
+
+  async updateDisplayNameByAdminByUserId(data: {
+    actorTelegramId: string;
+    targetUserId: string;
+    displayName: string;
+  }): Promise<{
+    id: string;
+    previousDisplayName: string | null;
+    updatedDisplayName: string;
+  }> {
+    const actor = await this.requireAdminByTelegramId(data.actorTelegramId);
+    const target = await this.getUserByIdOrFail(data.targetUserId);
+    const nextDisplayName = data.displayName.trim();
+
+    if (!nextDisplayName) {
+      throw new BadRequestException('display_name не может быть пустым');
+    }
+
+    const previousDisplayName = target.displayName ?? null;
+    target.displayName = nextDisplayName;
+    await this.userRepository.save(target);
+
+    this.logAdminAction(
+      actor.id,
+      `updated display_name for user ${target.id} to "${nextDisplayName}"`,
+    );
+
+    return {
+      id: target.id,
+      previousDisplayName,
+      updatedDisplayName: nextDisplayName,
+    };
+  }
+
   async blockUserByAdmin(data: {
     actorTelegramId: string;
     targetTelegramId: string;
@@ -802,6 +854,23 @@ export class UsersService implements OnModuleInit {
     }
 
     return account.user;
+  }
+
+  private async getUserByIdOrFail(userId: string): Promise<UserEntity> {
+    const normalizedUserId = userId.trim();
+    if (!normalizedUserId) {
+      throw new BadRequestException('Укажите userId пользователя');
+    }
+
+    const user = await this.userRepository.findOne({
+      where: { id: normalizedUserId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Пользователь не найден');
+    }
+
+    return user;
   }
 
   private async resolveTargetUser(data: {
