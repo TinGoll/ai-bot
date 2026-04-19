@@ -3,9 +3,11 @@ import { Ctx, Message, On, Update } from 'nestjs-telegraf';
 import { Context, Markup } from 'telegraf';
 import { BotService } from './bot.service';
 import { UsersService } from '../users/users.service';
+import { USER_ROLE_VALUES, UserRole } from '../users/entities/user-role.enum';
 
 const MENU_BUTTONS = {
   profile: 'Профиль',
+  roles: 'Мои роли',
   changeDisplayName: 'Изменить имя',
   back: 'Назад',
 } as const;
@@ -26,7 +28,8 @@ export class BotUpdate {
 
   private getMainMenuKeyboard() {
     return Markup.keyboard([
-      [MENU_BUTTONS.profile, MENU_BUTTONS.changeDisplayName],
+      [MENU_BUTTONS.profile, MENU_BUTTONS.roles],
+      [MENU_BUTTONS.changeDisplayName],
       [MENU_BUTTONS.back],
     ]).resize();
   }
@@ -56,10 +59,185 @@ export class BotUpdate {
       'Ваш профиль:',
       `username: ${profile.username ?? 'не указан'}`,
       `display_name: ${profile.displayName ?? 'не указан'}`,
+      `роли: ${profile.roles.join(', ')}`,
       `дата регистрации: ${profile.createdAt.toLocaleString('ru-RU')}`,
     ].join('\n');
 
     await ctx.reply(profileText, this.getMainMenuKeyboard());
+  }
+
+  private async showRoleDescriptions(
+    ctx: Context,
+    telegramId: number,
+  ): Promise<void> {
+    const profile = await this.usersService.getProfileByTelegramId(
+      String(telegramId),
+    );
+    if (!profile) {
+      await ctx.reply(
+        'Профиль не найден. Выполните /start для регистрации.',
+        this.getMainMenuKeyboard(),
+      );
+      return;
+    }
+
+    const lines = ['Ваши роли:'];
+    for (const roleDescription of profile.roleDescriptions) {
+      lines.push(`• ${roleDescription.role}: ${roleDescription.description}`);
+    }
+
+    await ctx.reply(lines.join('\n'), this.getMainMenuKeyboard());
+  }
+
+  private parseRole(role: string): UserRole | null {
+    const normalizedRole = role.trim() as UserRole;
+    if (!USER_ROLE_VALUES.includes(normalizedRole)) {
+      return null;
+    }
+
+    return normalizedRole;
+  }
+
+  private async handleAdminCommand(
+    ctx: Context,
+    actorTelegramId: number,
+    text: string,
+  ): Promise<boolean> {
+    const [command, ...args] = text.split(' ');
+
+    if (command === '/admin_help') {
+      await ctx.reply(
+        [
+          'Команды администратора:',
+          '/admin_set_role <telegramId> <role> <on|off>',
+          '/admin_block <telegramId> <permanent|minutes> [reason]',
+          '/admin_unblock <telegramId>',
+          '/admin_role_desc <role> <description>',
+        ].join('\n'),
+      );
+      return true;
+    }
+
+    if (command === '/admin_set_role') {
+      const [targetTelegramId, roleRaw, modeRaw] = args;
+      const role = roleRaw ? this.parseRole(roleRaw) : null;
+      const enabled = modeRaw === 'on';
+      const disabled = modeRaw === 'off';
+      if (!targetTelegramId || !role || (!enabled && !disabled)) {
+        await ctx.reply('Формат: /admin_set_role <telegramId> <role> <on|off>');
+        return true;
+      }
+
+      try {
+        const user = await this.usersService.setUserRoleByAdmin({
+          actorTelegramId: String(actorTelegramId),
+          targetTelegramId,
+          role,
+          enabled,
+        });
+        await ctx.reply(
+          `Роли пользователя ${user.id}: ${user.roles.join(', ')}`,
+        );
+      } catch {
+        await ctx.reply(
+          'Не удалось изменить роль. Проверьте права и параметры.',
+        );
+      }
+      return true;
+    }
+
+    if (command === '/admin_block') {
+      const [targetTelegramId, modeRaw, ...reasonParts] = args;
+      if (!targetTelegramId || !modeRaw) {
+        await ctx.reply(
+          'Формат: /admin_block <telegramId> <permanent|minutes> [reason]',
+        );
+        return true;
+      }
+
+      const mode: 'temporary' | 'permanent' =
+        modeRaw === 'permanent' ? 'permanent' : 'temporary';
+      const durationMinutes =
+        mode === 'temporary' ? Number.parseInt(modeRaw, 10) : undefined;
+      if (mode === 'temporary' && (!durationMinutes || durationMinutes <= 0)) {
+        await ctx.reply(
+          'Для временной блокировки укажите число минут больше 0.',
+        );
+        return true;
+      }
+
+      try {
+        const user = await this.usersService.blockUserByAdmin({
+          actorTelegramId: String(actorTelegramId),
+          targetTelegramId,
+          mode,
+          durationMinutes,
+          reason: reasonParts.join(' ').trim() || undefined,
+        });
+        const suffix =
+          user.blockedUntil && mode === 'temporary'
+            ? ` до ${user.blockedUntil.toLocaleString('ru-RU')}`
+            : '';
+        await ctx.reply(`Пользователь ${user.id} заблокирован${suffix}.`);
+      } catch {
+        await ctx.reply(
+          'Не удалось выполнить блокировку. Проверьте права и параметры.',
+        );
+      }
+      return true;
+    }
+
+    if (command === '/admin_unblock') {
+      const [targetTelegramId] = args;
+      if (!targetTelegramId) {
+        await ctx.reply('Формат: /admin_unblock <telegramId>');
+        return true;
+      }
+
+      try {
+        const user = await this.usersService.blockUserByAdmin({
+          actorTelegramId: String(actorTelegramId),
+          targetTelegramId,
+          mode: 'unblock',
+        });
+        await ctx.reply(`Пользователь ${user.id} разблокирован.`);
+      } catch {
+        await ctx.reply(
+          'Не удалось снять блокировку. Проверьте права и параметры.',
+        );
+      }
+      return true;
+    }
+
+    if (command === '/admin_role_desc') {
+      const [roleRaw, ...descriptionParts] = args;
+      const role = roleRaw ? this.parseRole(roleRaw) : null;
+      const description = descriptionParts.join(' ').trim();
+
+      if (!role || !description) {
+        await ctx.reply('Формат: /admin_role_desc <role> <description>');
+        return true;
+      }
+
+      try {
+        const roleDescription =
+          await this.usersService.updateRoleDescriptionByAdmin({
+            actorTelegramId: String(actorTelegramId),
+            role,
+            description,
+          });
+        await ctx.reply(
+          `Описание роли ${roleDescription.role} обновлено: ${roleDescription.description}`,
+        );
+      } catch {
+        await ctx.reply(
+          'Не удалось обновить описание роли. Проверьте права и параметры.',
+        );
+      }
+      return true;
+    }
+
+    return false;
   }
 
   private async startDisplayNameChange(
@@ -146,8 +324,36 @@ export class BotUpdate {
       return;
     }
 
+    const adminCommandHandled = await this.handleAdminCommand(
+      ctx,
+      telegramId,
+      trimmedText,
+    );
+    if (adminCommandHandled) {
+      return;
+    }
+
+    const blockStatus = await this.usersService.getBlockStatusByTelegramId(
+      String(telegramId),
+    );
+    if (blockStatus?.isBlocked) {
+      const blockedUntilText = blockStatus.blockedUntil
+        ? ` до ${blockStatus.blockedUntil.toLocaleString('ru-RU')}`
+        : ' бессрочно';
+      const reasonText = blockStatus.blockReason
+        ? `\nПричина: ${blockStatus.blockReason}`
+        : '';
+      await ctx.reply(`Ваш доступ ограничен${blockedUntilText}.${reasonText}`);
+      return;
+    }
+
     if (trimmedText === MENU_BUTTONS.profile) {
       await this.showProfile(ctx, telegramId);
+      return;
+    }
+
+    if (trimmedText === MENU_BUTTONS.roles) {
+      await this.showRoleDescriptions(ctx, telegramId);
       return;
     }
 

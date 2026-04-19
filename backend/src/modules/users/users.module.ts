@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { RoleDescriptionEntity } from './entities/role-description.entity';
 import { TelegramAccountEntity } from './entities/telegram-account.entity';
 import { TelegramLinkTokenEntity } from './entities/telegram-link-token.entity';
 import { UserEntity } from './entities/user.entity';
@@ -12,6 +13,7 @@ import { UsersService } from './users.service';
       UserEntity,
       TelegramAccountEntity,
       TelegramLinkTokenEntity,
+      RoleDescriptionEntity,
     ]),
   ],
   controllers: [UsersController],
